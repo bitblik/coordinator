@@ -10,39 +10,55 @@ final _dbUser = 'user'; // Replace with your DB user
 final _dbPassword = 'password'; // Replace with your DB password
 
 class DatabaseService {
-  PostgreSQLConnection? _connection;
+  Pool? _pool; // Changed from PostgreSQLConnection to Pool
 
   Future<void> connect() async {
-    if (_connection?.isClosed == false) {
-      return; // Already connected
+    if (_pool != null) {
+      return; // Already connected/initialized
     }
-    _connection = PostgreSQLConnection(
-      _dbHost,
-      _dbPort,
-      _dbName,
+
+    // Define Pool settings
+    var poolSettings = PoolSettings(
+        maxConnectionCount:
+            10, // Example: Allow up to 10 concurrent connections
+        // queryTimeout: const Duration(minutes: 1), // Optional: Timeout for queries
+        sslMode: SslMode.disable // Adjust SSL mode as needed
+        );
+
+    // Define the endpoint using environment variables
+    var endpoint = Endpoint(
+      host: _dbHost,
+      port: _dbPort,
+      database: _dbName,
       username: _dbUser,
       password: _dbPassword,
     );
+
     try {
-      await _connection!.open();
-      print('Database connection established.');
+      // Initialize the pool
+      _pool = Pool.withEndpoints([endpoint], settings: poolSettings);
+      // The pool doesn't require an explicit 'open' call like a single connection.
+      // We can test the connection by executing a simple query.
+      await _pool!.execute('SELECT 1;');
+      print('Database pool initialized and connection tested.');
       await _ensureOffersTable();
     } catch (e) {
-      print('Error connecting to database: $e');
-      _connection = null;
+      print('Error initializing database pool: $e');
+      _pool = null; // Ensure pool is null on error
       rethrow;
     }
   }
 
   Future<void> disconnect() async {
-    await _connection?.close();
-    _connection = null;
-    print('Database connection closed.');
+    await _pool?.close(); // Close the pool
+    _pool = null;
+    print('Database pool closed.');
   }
 
   Future<void> _ensureOffersTable() async {
-    if (_connection == null) throw StateError('Database not connected.');
-    await _connection!.execute('''
+    if (_pool == null) throw StateError('Database pool not initialized.');
+    // Use pool.execute
+    await _pool!.execute('''
       CREATE TABLE IF NOT EXISTS offers (
         id UUID PRIMARY KEY,
         amount_sats BIGINT NOT NULL,
@@ -68,28 +84,30 @@ class DatabaseService {
         fiat_currency TEXT
       );
     ''');
-    await _connection!.execute('''
+    // Use pool.execute for index creation
+    await _pool!.execute('''
       CREATE INDEX IF NOT EXISTS idx_offers_status ON offers (status);
     ''');
-    await _connection!.execute('''
+    await _pool!.execute('''
       CREATE INDEX IF NOT EXISTS idx_offers_maker_pubkey ON offers (maker_pubkey);
     ''');
-    await _connection!.execute('''
+    await _pool!.execute('''
       CREATE INDEX IF NOT EXISTS idx_offers_taker_pubkey ON offers (taker_pubkey);
     ''');
     print('Offers table checked/created.');
   }
 
   Future<Offer> createOffer(Offer offer) async {
-    if (_connection == null) throw StateError('Database not connected.');
+    if (_pool == null) throw StateError('Database pool not initialized.');
 
     final now = DateTime.now().toUtc();
-    await _connection!.execute(
+    await _pool!.execute(
       '''
         INSERT INTO offers (id, amount_sats, maker_fees, maker_pubkey, hold_invoice_payment_hash, hold_invoice_preimage, status, created_at, updated_at, fiat_amount, fiat_currency)
         VALUES (@id, @amount_sats, @maker_fees, @maker_pubkey, @hold_invoice_payment_hash, @hold_invoice_preimage, @status, @created_at, @updated_at, @fiat_amount, @fiat_currency)
       ''',
-      substitutionValues: {
+      // Use the 'parameters' named argument
+      parameters: {
         'id': offer.id,
         'amount_sats': offer.amountSats,
         'maker_fees': offer.makerFees, // Renamed
@@ -108,45 +126,51 @@ class DatabaseService {
   }
 
   Future<Offer?> getOfferById(String id) async {
-    if (_connection == null) throw StateError('Database not connected.');
-    final results = await _connection!.query(
-      'SELECT * FROM offers WHERE id = @id LIMIT 1',
-      substitutionValues: {'id': id},
-    );
+    if (_pool == null) throw StateError('Database pool not initialized.');
+    // Use pool.run and connection.execute
+    final results = await _pool!.run((connection) => connection.execute(
+          Sql.named('SELECT * FROM offers WHERE id = @id LIMIT 1'),
+          parameters: {'id': id},
+        ));
     if (results.isEmpty) return null;
     return _mapRowToOffer(results.first);
   }
 
   Future<Offer?> getOfferByPaymentHash(String paymentHash) async {
-    if (_connection == null) throw StateError('Database not connected.');
-    final results = await _connection!.query(
-      'SELECT * FROM offers WHERE hold_invoice_payment_hash = @paymentHash LIMIT 1',
-      substitutionValues: {'paymentHash': paymentHash},
-    );
+    if (_pool == null) throw StateError('Database pool not initialized.');
+    // Use pool.run and connection.execute
+    final results = await _pool!.run((connection) => connection.execute(
+          Sql.named(
+              'SELECT * FROM offers WHERE hold_invoice_payment_hash = @paymentHash LIMIT 1'),
+          parameters: {'paymentHash': paymentHash},
+        ));
     if (results.isEmpty) return null;
     return _mapRowToOffer(results.first);
   }
 
   Future<List<Offer>> getOffersByStatus(OfferStatus status,
       {int limit = 50, int offset = 0}) async {
-    if (_connection == null) throw StateError('Database not connected.');
-    final results = await _connection!.query(
-      'SELECT * FROM offers WHERE status = @status ORDER BY created_at DESC LIMIT @limit OFFSET @offset',
-      substitutionValues: {
-        'status': status.name,
-        'limit': limit,
-        'offset': offset,
-      },
-    );
+    if (_pool == null) throw StateError('Database pool not initialized.');
+    // Use pool.run and connection.execute
+    final results = await _pool!.run((connection) => connection.execute(
+          Sql.named(
+              'SELECT * FROM offers WHERE status = @status ORDER BY created_at DESC LIMIT @limit OFFSET @offset'),
+          parameters: {
+            'status': status.name,
+            'limit': limit,
+            'offset': offset,
+          },
+        )); // Removed extra closing parenthesis
     return results.map(_mapRowToOffer).toList();
   }
 
   Future<bool> updateTakerInvoice(String id, String takerInvoice) async {
-    if (_connection == null) throw StateError('Database not connected.');
+    if (_pool == null) throw StateError('Database pool not initialized.');
     final now = DateTime.now().toUtc();
-    final affectedRows = await _connection!.execute(
+    final affectedRows = await _pool!.execute(
       'UPDATE offers SET taker_invoice = @taker_invoice, updated_at = @updated_at WHERE id = @id',
-      substitutionValues: {
+      parameters: {
+        // Use 'parameters'
         'id': id,
         'taker_invoice': takerInvoice,
         'updated_at': now,
@@ -156,11 +180,12 @@ class DatabaseService {
   }
 
   Future<bool> updateTakerInvoiceFees(String id, int fees) async {
-    if (_connection == null) throw StateError('Database not connected.');
+    if (_pool == null) throw StateError('Database pool not initialized.');
     final now = DateTime.now().toUtc();
-    final affectedRows = await _connection!.execute(
+    final affectedRows = await _pool!.execute(
       'UPDATE offers SET taker_invoice_fees = @fees, updated_at = @updated_at WHERE id = @id',
-      substitutionValues: {
+      parameters: {
+        // Use 'parameters'
         'id': id,
         'fees': fees,
         'updated_at': now,
@@ -181,7 +206,7 @@ class DatabaseService {
       int? takerFees}) async {
     // Renamed parameter
     // Added takerFees
-    if (_connection == null) throw StateError('Database not connected.');
+    if (_pool == null) throw StateError('Database pool not initialized.');
     final now = DateTime.now().toUtc(); // Keep 'now' for updated_at
     Map<String, dynamic> params = {
       'id': id,
@@ -257,9 +282,9 @@ class DatabaseService {
     print(
         '[DatabaseService.updateOfferStatus] SQL: UPDATE offers SET ${setClauses.join(', ')} WHERE id = @id');
 
-    final affectedRows = await _connection!.execute(
+    final affectedRows = await _pool!.execute(
       'UPDATE offers SET ${setClauses.join(', ')} WHERE id = @id',
-      substitutionValues: params,
+      parameters: params, // Use 'parameters'
     );
     // Return bool indicating success
     return affectedRows == 1;
@@ -267,9 +292,10 @@ class DatabaseService {
 
   // Cancel an offer (set status to cancelled) only if it's currently funded
   Future<bool> cancelOffer(String id, String makerPubkey) async {
-    if (_connection == null) throw StateError('Database not connected.');
+    if (_pool == null) throw StateError('Database pool not initialized.');
     final now = DateTime.now().toUtc();
-    final affectedRows = await _connection!.execute(
+    final affectedRows = await _pool!.execute(
+      // Use _pool
       '''
          UPDATE offers
          SET status = @newStatus,
@@ -283,7 +309,8 @@ class DatabaseService {
            AND maker_pubkey = @makerPubkey
            AND status = @requiredStatus
        ''',
-      substitutionValues: {
+      parameters: {
+        // Use 'parameters'
         'id': id,
         'makerPubkey': makerPubkey,
         'newStatus': OfferStatus.cancelled.name, // Use cancelled status
@@ -296,7 +323,8 @@ class DatabaseService {
 
   // Fetch active offers where the user is either maker or taker
   Future<List<Offer>> getMyActiveOffers(String userPubkey) async {
-    if (_connection == null) throw StateError('Database not connected.');
+    // Check _pool instead of _connection
+    if (_pool == null) throw StateError('Database pool not initialized.');
     // Define "active" statuses (exclude terminal/cancelled states)
     final activeStatuses = [
       OfferStatus.created.name,
@@ -310,22 +338,24 @@ class DatabaseService {
       OfferStatus.takerPaid.name
     ];
 
-    final results = await _connection!.query(
-      '''
+    // Use pool.run and connection.execute
+    final results = await _pool!.run((connection) => connection.execute(
+          Sql.named('''
          SELECT * FROM offers
          WHERE (maker_pubkey = @userPubkey OR taker_pubkey = @userPubkey)
          AND status = ANY(@activeStatuses)
          ORDER BY created_at DESC
-       ''',
-      substitutionValues: {
-        'userPubkey': userPubkey,
-        'activeStatuses': activeStatuses,
-      },
-    );
+       '''), // Close Sql.named
+          parameters: {
+            'userPubkey': userPubkey,
+            'activeStatuses': activeStatuses,
+          },
+        )); // Close pool.run
     return results.map(_mapRowToOffer).toList();
   }
 
-  Offer _mapRowToOffer(PostgreSQLResultRow row) {
+  // Correct type hint to ResultRow
+  Offer _mapRowToOffer(ResultRow row) {
     final map = row.toColumnMap();
     return Offer(
       id: map['id'],
@@ -336,8 +366,9 @@ class DatabaseService {
       holdInvoicePreimage: map['hold_invoice_preimage'],
       status: OfferStatus.values.byName(map['status']),
       createdAt: (map['created_at'] as DateTime).toLocal(),
-      fiatAmount: double.parse(map['fiat_amount']),
-      fiatCurrency: map['fiat_currency'] ?? '?',
+      // Safely handle NUMERIC to double conversion, providing default if null
+      fiatAmount: (map['fiat_amount'] as num?)?.toDouble() ?? 0.0,
+      fiatCurrency: map['fiat_currency'], // Allow null currency
     )
       ..takerPubkey = map['taker_pubkey']
       ..takerLightningAddress = map['taker_lightning_address']
@@ -352,4 +383,4 @@ class DatabaseService {
       ..takerPaidAt = (map['taker_paid_at'] as DateTime?)?.toLocal()
       ..takerFees = map['taker_fees']; // Renamed field and column
   }
-}
+} // Removed extra closing brace
