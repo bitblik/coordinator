@@ -101,15 +101,24 @@ class DatabaseService {
     if (_pool == null) throw StateError('Database pool not initialized.');
 
     final now = DateTime.now().toUtc();
+    // Use pool.execute() with parameters passed to execute()
     await _pool!.execute(
-      '''
+      // Wrap the SQL string with Sql.named()
+      Sql.named('''
         INSERT INTO offers (id, amount_sats, maker_fees, maker_pubkey, hold_invoice_payment_hash, hold_invoice_preimage, status, created_at, updated_at, fiat_amount, fiat_currency)
         VALUES (@id, @amount_sats, @maker_fees, @maker_pubkey, @hold_invoice_payment_hash, @hold_invoice_preimage, @status, @created_at, @updated_at, @fiat_amount, @fiat_currency)
-      ''',
-      // Use the 'parameters' named argument
+      '''),
+      // Pass parameters map to execute method
       parameters: {
         'id': offer.id,
         'amount_sats': offer.amountSats,
+        'maker_fees': offer.makerFees,
+        'maker_pubkey': offer.makerPubkey,
+        'hold_invoice_payment_hash': offer.holdInvoicePaymentHash,
+        'hold_invoice_preimage': offer.holdInvoicePreimage,
+        'status': offer.status.name,
+        'created_at': offer.createdAt.toUtc(),
+        'updated_at': now,
         'maker_fees': offer.makerFees, // Renamed
         'maker_pubkey': offer.makerPubkey,
         'hold_invoice_payment_hash': offer.holdInvoicePaymentHash,
@@ -167,10 +176,11 @@ class DatabaseService {
   Future<bool> updateTakerInvoice(String id, String takerInvoice) async {
     if (_pool == null) throw StateError('Database pool not initialized.');
     final now = DateTime.now().toUtc();
+    // Use pool.execute directly for updates
     final affectedRows = await _pool!.execute(
-      'UPDATE offers SET taker_invoice = @taker_invoice, updated_at = @updated_at WHERE id = @id',
+      Sql.named(
+          'UPDATE offers SET taker_invoice = @taker_invoice, updated_at = @updated_at WHERE id = @id'), // Wrap with Sql.named
       parameters: {
-        // Use 'parameters'
         'id': id,
         'taker_invoice': takerInvoice,
         'updated_at': now,
@@ -182,10 +192,11 @@ class DatabaseService {
   Future<bool> updateTakerInvoiceFees(String id, int fees) async {
     if (_pool == null) throw StateError('Database pool not initialized.');
     final now = DateTime.now().toUtc();
+    // Use pool.execute directly for updates
     final affectedRows = await _pool!.execute(
-      'UPDATE offers SET taker_invoice_fees = @fees, updated_at = @updated_at WHERE id = @id',
+      Sql.named(
+          'UPDATE offers SET taker_invoice_fees = @fees, updated_at = @updated_at WHERE id = @id'), // Wrap with Sql.named
       parameters: {
-        // Use 'parameters'
         'id': id,
         'fees': fees,
         'updated_at': now,
@@ -282,8 +293,10 @@ class DatabaseService {
     print(
         '[DatabaseService.updateOfferStatus] SQL: UPDATE offers SET ${setClauses.join(', ')} WHERE id = @id');
 
+    // Use pool.execute directly for updates
     final affectedRows = await _pool!.execute(
-      'UPDATE offers SET ${setClauses.join(', ')} WHERE id = @id',
+      Sql.named(
+          'UPDATE offers SET ${setClauses.join(', ')} WHERE id = @id'), // Wrap with Sql.named
       parameters: params, // Use 'parameters'
     );
     // Return bool indicating success
@@ -294,9 +307,9 @@ class DatabaseService {
   Future<bool> cancelOffer(String id, String makerPubkey) async {
     if (_pool == null) throw StateError('Database pool not initialized.');
     final now = DateTime.now().toUtc();
+    // Use pool.execute directly for updates
     final affectedRows = await _pool!.execute(
-      // Use _pool
-      '''
+      Sql.named('''
          UPDATE offers
          SET status = @newStatus,
              updated_at = @updated_at,
@@ -308,9 +321,8 @@ class DatabaseService {
          WHERE id = @id
            AND maker_pubkey = @makerPubkey
            AND status = @requiredStatus
-       ''',
+       '''), // Close Sql.named
       parameters: {
-        // Use 'parameters'
         'id': id,
         'makerPubkey': makerPubkey,
         'newStatus': OfferStatus.cancelled.name, // Use cancelled status
@@ -366,8 +378,8 @@ class DatabaseService {
       holdInvoicePreimage: map['hold_invoice_preimage'],
       status: OfferStatus.values.byName(map['status']),
       createdAt: (map['created_at'] as DateTime).toLocal(),
-      // Safely handle NUMERIC to double conversion, providing default if null
-      fiatAmount: (map['fiat_amount'] as num?)?.toDouble() ?? 0.0,
+      // Parse NUMERIC (returned as String) to double, handle null/parse errors
+      fiatAmount: double.tryParse(map['fiat_amount']?.toString() ?? '') ?? 0.0,
       fiatCurrency: map['fiat_currency'], // Allow null currency
     )
       ..takerPubkey = map['taker_pubkey']
@@ -383,4 +395,4 @@ class DatabaseService {
       ..takerPaidAt = (map['taker_paid_at'] as DateTime?)?.toLocal()
       ..takerFees = map['taker_fees']; // Renamed field and column
   }
-} // Removed extra closing brace
+}
