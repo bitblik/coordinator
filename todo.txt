@@ -7,9 +7,7 @@
 
 - settle maker invoice after 4 hours even if not confirmed so that we can resolve conflict having the sats
 - sign the api requests with priv key
-- coordinator info capabilities endpoint with min/max amounts, maker/taker fees for discovery
 
-- show coordinator/client version on UI
 - timer countdown of 2min for validity of blik code in both taker/maker screens with info what to do next.
 - in taker screen show when maker received blik ( blikReceived -> blikSentToMaker)
 - backup/restore keys
@@ -20,7 +18,6 @@
 ======
 - fidelity bond for taker
 - NWC wallet integration
-- WebLN for paying invoice with Alby extension
 - re-generate new keys
 - refactor to use websockets / nostr
 
