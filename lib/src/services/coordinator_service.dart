@@ -67,6 +67,12 @@ class CoordinatorService {
   static final int _fundedExpireTimeoutSeconds =
       int.tryParse(Platform.environment['FUNDED_EXPIRY_SECONDS'] ?? '') ?? 600;
 
+  // Dispute timeout configuration (e.g., for invalidBlik/conflict states)
+  static final int _disputeTimeoutSeconds = int.tryParse(
+          Platform.environment['SETTLE_INVOICE_DISPUTE_TIMEOUT_SECONDS'] ??
+              '') ??
+      86400; // Default to 24 hours
+
   // Exchange rate cache
   double? _cachedPlnRate;
   DateTime? _cachedPlnRateTime;
@@ -208,6 +214,7 @@ class CoordinatorService {
   final Map<String, Timer> _reservationTimers = {};
   final Map<String, Timer> _blikConfirmationTimers = {};
   final Map<String, Timer> _fundedOfferTimers = {};
+  final Map<String, Timer> _disputeResolutionTimers = {};
 
   // Fee percentages, configurable via environment variables
   static final double _makerFeePercentage =
@@ -253,6 +260,7 @@ class CoordinatorService {
     await _checkExpiredFundedOffers();
     await _checkExpiredReservations();
     await _checkExpiredBlikConfirmations();
+    await _checkPendingDisputeSettlements(); // Add this line
   }
 
   Future<void> _initializeMatrixClient() async {
@@ -402,7 +410,8 @@ class CoordinatorService {
             if (success) {
               revertedCount++;
               // Restart the funded offer timer
-              _startFundedOfferTimer(offer); // offer object is available from the loop
+              _startFundedOfferTimer(
+                  offer); // offer object is available from the loop
             } else {
               print('Error reverting expired offer ${offer.id} on startup.');
             }
@@ -420,7 +429,8 @@ class CoordinatorService {
           if (success) {
             revertedCount++;
             // Restart the funded offer timer
-            _startFundedOfferTimer(offer); // offer object is available from the loop
+            _startFundedOfferTimer(
+                offer); // offer object is available from the loop
           } else {
             print(
                 'Error reverting reserved offer ${offer.id} with missing timestamp on startup.');
@@ -710,7 +720,7 @@ class CoordinatorService {
       print(
           'Offer ${offer.id} has already passed its expiration time. Handling expiration immediately.');
       // Ensure it's not processed in a tight loop if already handled
-      _fundedOfferTimers.remove(offer.id);
+      // _fundedOfferTimers.remove(offer.id); // Removed to avoid modifying map during iteration issues if called directly
       _handleFundedOfferExpiration(offer);
     } else {
       print(
@@ -880,6 +890,9 @@ class CoordinatorService {
           'Offer $offerId reserved successfully, DB timestamp set to $timestampToStore.');
       _fundedOfferTimers[offerId]?.cancel();
       _fundedOfferTimers.remove(offerId);
+      _disputeResolutionTimers[offerId]
+          ?.cancel(); // Cancel dispute timer if active
+      _disputeResolutionTimers.remove(offerId);
       _startReservationTimer(offerId);
       return timestampToStore;
     } else {
@@ -956,27 +969,17 @@ class CoordinatorService {
     print(
         '### COORDINATOR: Handling BLIK confirmation timeout for offer $offerId');
     final offer = await _dbService.getOfferById(offerId);
-    if (offer != null &&
-        (offer.status == OfferStatus.blikReceived ||
-            offer.status == OfferStatus.blikSentToMaker)) {
-      print(
-          'Offer ${offer.id} BLIK confirmation timed out (status: ${offer.status}). Reverting status to funded.');
-      final success = await _dbService.updateOfferStatus(
-        offerId,
-        OfferStatus.funded,
-        // Clear BLIK related fields as well
-        blikCode: null,
-        takerLightningAddress: null,
-        blikReceivedAt: null,
-      );
-      if (success) {
+    if (offer != null) {
+      _blikConfirmationTimers[offerId]?.cancel();
+      _blikConfirmationTimers.remove(offerId);
+      if (offer.status == OfferStatus.blikReceived) {
         print(
-            'Offer $offerId status reverted to funded due to BLIK confirmation timeout.');
-        // Restart the funded offer timer
-        _startFundedOfferTimer(offer);
-      } else {
+            'Offer ${offer.id} BLIK confirmation timed out (status: ${offer.status}). Setting status to ${OfferStatus.expiredBlik}.');
+        await _dbService.updateOfferStatus(offerId, OfferStatus.expiredBlik);
+      } else if (offer.status == OfferStatus.blikSentToMaker) {
         print(
-            'Error reverting offer $offerId status after BLIK confirmation timeout.');
+            'Offer ${offer.id} BLIK confirmation timed out (status: ${offer.status}). Setting status to ${OfferStatus.expiredSentBlik}.');
+        await _dbService.updateOfferStatus(offerId, OfferStatus.expiredSentBlik);
       }
     } else {
       print(
@@ -1062,9 +1065,9 @@ class CoordinatorService {
           print('Offer $offerId status updated to blikSentToMaker.');
         }
       }
-      // Cancel timer regardless, as maker is now involved.
-      _blikConfirmationTimers[offerId]?.cancel();
-      _blikConfirmationTimers.remove(offerId);
+      // // Cancel timer regardless, as maker is now involved.
+      // _blikConfirmationTimers[offerId]?.cancel();
+      // _blikConfirmationTimers.remove(offerId);
     } catch (e) {
       print('Error during getBlikCodeForMaker for offer $offerId: $e');
     }
@@ -1083,8 +1086,7 @@ class CoordinatorService {
       return false;
     }
 
-    if (offer.status != OfferStatus.blikReceived &&
-        offer.status != OfferStatus.blikSentToMaker) {
+    if (offer.status != OfferStatus.blikSentToMaker) {
       print(
           'Offer $offerId is not in a state where BLIK can be marked invalid (current state: ${offer.status}).');
       return false;
@@ -1099,6 +1101,14 @@ class CoordinatorService {
 
     if (success) {
       print('Offer $offerId status updated to invalidBlik.');
+      // Fetch the updated offer to get the correct createdAt/updatedAt timestamp for the timer
+      final updatedOffer = await _dbService.getOfferById(offerId);
+      if (updatedOffer != null) {
+        _startDisputeResolutionTimer(updatedOffer);
+      } else {
+        print(
+            'Error: Could not fetch offer $offerId after updating to invalidBlik to start dispute timer.');
+      }
     } else {
       print('Failed to update offer $offerId status to invalidBlik in DB.');
     }
@@ -1126,6 +1136,14 @@ class CoordinatorService {
 
     if (success) {
       print('Offer $offerId status updated to conflict.');
+      // Fetch the updated offer to get the correct createdAt/updatedAt timestamp for the timer
+      final updatedOffer = await _dbService.getOfferById(offerId);
+      if (updatedOffer != null) {
+        _startDisputeResolutionTimer(updatedOffer);
+      } else {
+        print(
+            'Error: Could not fetch offer $offerId after updating to conflict to start dispute timer.');
+      }
     } else {
       print('Failed to update offer $offerId status to conflict in DB.');
     }
@@ -1150,6 +1168,9 @@ class CoordinatorService {
     _reservationTimers.remove(offerId);
     _blikConfirmationTimers[offerId]?.cancel();
     _blikConfirmationTimers.remove(offerId);
+    _disputeResolutionTimers[offerId]
+        ?.cancel(); // Cancel dispute timer if active
+    _disputeResolutionTimers.remove(offerId);
     print('Cancelled timers for offer $offerId during maker confirmation.');
 
     bool success =
@@ -1613,5 +1634,121 @@ class CoordinatorService {
         }
       }
     };
+  }
+
+  // --- Dispute Resolution Logic ---
+
+  Future<void> _checkPendingDisputeSettlements() async {
+    print('Checking for pending dispute settlements on startup...');
+    if (_paymentBackend == null) {
+      print(
+          "Skipping pending dispute settlements check: No payment backend configured.");
+      return;
+    }
+    try {
+      final offersToConsider = [
+        ...await _dbService.getOffersByStatus(OfferStatus.invalidBlik,
+            limit: 1000),
+        ...await _dbService.getOffersByStatus(OfferStatus.conflict,
+            limit: 1000),
+        ...await _dbService.getOffersByStatus(OfferStatus.expiredSentBlik,
+            limit: 1000),
+      ];
+
+      int processedCount = 0;
+      for (final offer in offersToConsider) {
+        // The timer logic uses createdAt (funding time) as the base for dispute timeout.
+        _startDisputeResolutionTimer(offer);
+        processedCount++;
+      }
+      print(
+          'Pending dispute settlement check complete. Processed $processedCount offers for timer setup/handling.');
+    } catch (e) {
+      print('Error during pending dispute settlement check: $e');
+    }
+  }
+
+  void _startDisputeResolutionTimer(Offer offer) {
+    _disputeResolutionTimers[offer.id]?.cancel();
+
+    // Dispute timeout is calculated from the offer's creation/funding time.
+    final now = _clock.now().toUtc();
+    final expirationTime =
+        offer.createdAt.add(Duration(seconds: _disputeTimeoutSeconds));
+    final remainingDuration = expirationTime.difference(now);
+
+    print(
+        'Offer ${offer.id} (status ${offer.status}, created at ${offer.createdAt}) dispute timeout check: Expiration time $expirationTime, Now $now, Remaining ${remainingDuration.inSeconds}s');
+
+    if (remainingDuration.isNegative || remainingDuration.inSeconds <= 0) {
+      print(
+          'Offer ${offer.id} has already passed its dispute resolution timeout (based on createdAt). Handling immediately.');
+      _disputeResolutionTimers
+          .remove(offer.id); // Avoid issues if called directly
+      _handleDisputeTimeout(offer);
+    } else {
+      print(
+          'Starting dispute resolution timer for offer ${offer.id} with remaining duration: ${remainingDuration.inSeconds}s (based on createdAt)');
+      _disputeResolutionTimers[offer.id] = Timer(remainingDuration, () {
+        print('Dispute resolution timer expired for offer ${offer.id}');
+        _handleDisputeTimeout(offer); // Pass the original offer object
+        _disputeResolutionTimers.remove(offer.id);
+      });
+    }
+  }
+
+  Future<void> _handleDisputeTimeout(Offer initialOffer) async {
+    print(
+        'Handling dispute timeout for offer ${initialOffer.id} (initial status: ${initialOffer.status})');
+
+    // Fetch the latest state of the offer to ensure it's still eligible
+    final currentOffer = await _dbService.getOfferById(initialOffer.id);
+    if (currentOffer == null) {
+      print(
+          'Error: Offer ${initialOffer.id} not found in DB during dispute timeout handling.');
+      _disputeResolutionTimers.remove(initialOffer.id);
+      return;
+    }
+
+    if (currentOffer.status != OfferStatus.invalidBlik &&
+        currentOffer.status != OfferStatus.conflict) {
+      print(
+          'Offer ${currentOffer.id} is no longer in invalidBlik or conflict state (current status: ${currentOffer.status}). No action needed for dispute timeout.');
+      _disputeResolutionTimers.remove(currentOffer.id);
+      return;
+    }
+
+    if (_paymentBackend == null) {
+      print(
+          'CRITICAL: No payment backend to settle invoice for disputed offer ${currentOffer.id}.');
+      _disputeResolutionTimers.remove(currentOffer.id);
+      return;
+    }
+
+    try {
+      print(
+          'Attempting to settle hold invoice ${currentOffer.holdInvoicePaymentHash} for disputed offer ${currentOffer.id}...');
+      await _paymentBackend!
+          .settleInvoice(preimageHex: currentOffer.holdInvoicePreimage);
+      print(
+          'Hold invoice for disputed offer ${currentOffer.id} settled successfully via $_paymentBackendType.');
+
+      final dbSuccess = await _dbService.updateOfferStatus(
+          currentOffer.id, OfferStatus.dispute);
+      if (dbSuccess) {
+        print(
+            'Offer ${currentOffer.id} status updated to dispute in DB due to timeout.');
+      } else {
+        print(
+            'Failed to update offer ${currentOffer.id} status to dispute in DB after settling invoice.');
+        // Potentially log this as a critical state inconsistency
+      }
+    } catch (e) {
+      print(
+          'Error settling hold invoice or updating status for disputed offer ${currentOffer.id}: $e');
+      // Depending on the error, we might want to retry or flag for manual intervention
+    } finally {
+      _disputeResolutionTimers.remove(currentOffer.id);
+    }
   }
 }

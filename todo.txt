@@ -1,5 +1,7 @@
-- tests
-- settle maker invoice after 1 hour even if not confirmed so that we can resolve conflict having the sats
+- verify critical tests
+- settle maker invoice after 1 hour even if not confirmed so that we can resolve dispute having the sats
+- refresh finished offers after finishing a transaction
+- show offer details in maker success screen
 - transaction to dispute state
 - sign the api requests with priv key
 - fidelity bond for taker
