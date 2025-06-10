@@ -1158,6 +1158,8 @@ class CoordinatorService {
         (offer.status !=
                 OfferStatus
                     .conflict && // Allow confirmation from conflict state
+            offer.status != OfferStatus.expiredSentBlik &&
+            offer.status != OfferStatus.takerConfirmed &&
             offer.status != OfferStatus.blikSentToMaker)) {
       print(
           'Offer $offerId not found, maker mismatch, or not in correct state for confirmation (current: ${offer?.status}).');

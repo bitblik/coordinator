@@ -1,12 +1,18 @@
 - verify critical tests
+
 - settle maker invoice after 1 hour even if not confirmed so that we can resolve dispute having the sats
-- refresh finished offers after finishing a transaction
-- show offer details in maker success screen
+
+- keep active offer in client, only check state changes
+
 - transaction to dispute state
 - sign the api requests with priv key
+
 - fidelity bond for taker
 - refactor to use websockets / nostr
 - check leaking details on api json
+
+- refresh finished offers after finishing a transaction
+
 - telegram bot
 - multiple coordinators (from DVM/nostr announced?)
 - while in /taker-conflict if maker confirms it should refresh and show taker success
