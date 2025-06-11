@@ -979,7 +979,8 @@ class CoordinatorService {
       } else if (offer.status == OfferStatus.blikSentToMaker) {
         print(
             'Offer ${offer.id} BLIK confirmation timed out (status: ${offer.status}). Setting status to ${OfferStatus.expiredSentBlik}.');
-        await _dbService.updateOfferStatus(offerId, OfferStatus.expiredSentBlik);
+        await _dbService.updateOfferStatus(
+            offerId, OfferStatus.expiredSentBlik);
       }
     } else {
       print(
@@ -1115,40 +1116,7 @@ class CoordinatorService {
     return success;
   }
 
-  Future<bool> markOfferConflict(String offerId, String takerId) async {
-    print('Taker $takerId marking offer $offerId as conflict.');
-    final offer = await _dbService.getOfferById(offerId);
-
-    if (offer == null || offer.takerPubkey != takerId) {
-      print(
-          'Offer $offerId not found or taker ID mismatch for marking conflict.');
-      return false;
-    }
-
-    if (offer.status != OfferStatus.invalidBlik) {
-      print(
-          'Offer $offerId is not in the invalidBlik state (current state: ${offer.status}). Cannot mark as conflict.');
-      return false;
-    }
-
-    final success =
-        await _dbService.updateOfferStatus(offerId, OfferStatus.conflict);
-
-    if (success) {
-      print('Offer $offerId status updated to conflict.');
-      // Fetch the updated offer to get the correct createdAt/updatedAt timestamp for the timer
-      final updatedOffer = await _dbService.getOfferById(offerId);
-      if (updatedOffer != null) {
-        _startDisputeResolutionTimer(updatedOffer);
-      } else {
-        print(
-            'Error: Could not fetch offer $offerId after updating to conflict to start dispute timer.');
-      }
-    } else {
-      print('Failed to update offer $offerId status to conflict in DB.');
-    }
-    return success;
-  }
+  // Method markOfferConflict removed
 
   Future<bool> confirmMakerPayment(String offerId, String makerId) async {
     print('Maker $makerId confirming payment for offer $offerId');
@@ -1538,6 +1506,82 @@ class CoordinatorService {
     } catch (e) {
       print('Exception during LNURL resolution for $lightningAddress: $e');
       return null;
+    }
+  }
+
+  Future<Map<String, dynamic>> blikChargedByTaker(
+      String offerId, String takerId) async {
+    print('Taker $takerId signals BLIK charged for offer $offerId');
+    final offer = await _dbService.getOfferById(offerId);
+
+    if (offer == null) {
+      return {
+        'success': false,
+        'error': 'Offer not found.',
+        'new_status': null
+      };
+    }
+
+    if (offer.takerPubkey != takerId) {
+      return {
+        'success': false,
+        'error': 'Taker ID mismatch.',
+        'new_status': null
+      };
+    }
+
+    OfferStatus newStatus;
+    String message;
+
+    if (offer.status == OfferStatus.invalidBlik) {
+      newStatus = OfferStatus.conflict;
+      message =
+          'BLIK charged by taker after maker marked as invalid. Offer moved to conflict.';
+      final success = await _dbService.updateOfferStatus(offerId, newStatus);
+      if (success) {
+        // Restart dispute timer as the state relevant to dispute resolution changed
+        final updatedOffer = await _dbService.getOfferById(offerId);
+        if (updatedOffer != null) {
+          _startDisputeResolutionTimer(updatedOffer);
+        }
+        return {
+          'success': true,
+          'message': message,
+          'new_status': newStatus.name
+        };
+      } else {
+        return {
+          'success': false,
+          'error': 'Failed to update offer status to conflict.',
+          'new_status': offer.status.name
+        };
+      }
+    } else if (offer.status == OfferStatus.expiredSentBlik) {
+      newStatus = OfferStatus.takerConfirmed;
+      message =
+          'BLIK charged by taker after BLIK expired (sent to maker). Offer moved to takerConfirmed.';
+      final success = await _dbService.updateOfferStatus(offerId, newStatus);
+      if (success) {
+        // Potentially notify maker or handle further logic for takerConfirmed
+        return {
+          'success': true,
+          'message': message,
+          'new_status': newStatus.name
+        };
+      } else {
+        return {
+          'success': false,
+          'error': 'Failed to update offer status to takerConfirmed.',
+          'new_status': offer.status.name
+        };
+      }
+    } else {
+      return {
+        'success': false,
+        'error':
+            'BLIK charged signal not accepted in current offer status: ${offer.status}.',
+        'new_status': offer.status.name
+      };
     }
   }
 

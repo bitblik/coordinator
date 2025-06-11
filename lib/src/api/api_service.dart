@@ -30,12 +30,12 @@ class ApiService {
         _markBlikInvalidHandler); // New BLIK invalid endpoint
     _router.delete('/offers/<offerId>/reservation',
         _cancelReservationHandler); // Taker cancel reservation endpoint
-    _router.post('/offers/<offerId>/conflict',
-        _markOfferConflictHandler); // New conflict endpoint
+    // _router.post('/offers/<offerId>/conflict', _markOfferConflictHandler); // Removed conflict endpoint
     _router.get(
         '/info', _getCoordinatorInfoHandler); // New coordinator info endpoint
     _router.get('/stats/successful-offers',
         _getSuccessfulOffersStatsHandler); // New stats endpoint
+    _router.post('/offers/<offerId>/blik-charged', _blikChargedHandler);
   }
 
   Future<Response> _getCoordinatorInfoHandler(Request request) async {
@@ -311,7 +311,8 @@ class ApiService {
               selectedOffer = offer;
               break;
             }
-          } else if (offer.status.name == 'takerPaid' && now.difference(offer.takerPaidAt!.toUtc()).inSeconds < 60 ) {
+          } else if (offer.status.name == 'takerPaid' &&
+              now.difference(offer.takerPaidAt!.toUtc()).inSeconds < 60) {
             // skip takerPaid offers from active
             selectedOffer = offer;
             break;
@@ -527,38 +528,7 @@ class ApiService {
     }
   }
 
-  // Handler for marking offer as conflict
-  Future<Response> _markOfferConflictHandler(
-      Request request, String offerId) async {
-    try {
-      // Extract takerId from header
-      final takerId = request.headers['x-user-pubkey'];
-      if (takerId == null || takerId.isEmpty) {
-        return Response.unauthorized(jsonEncode(
-            {'error': 'Missing user identification (x-user-pubkey header)'}));
-      }
-
-      final success =
-          await _coordinatorService.markOfferConflict(offerId, takerId);
-
-      if (success) {
-        return Response.ok(
-            jsonEncode({'message': 'Offer marked as conflict successfully'}));
-      } else {
-        // Could be 403 Forbidden (wrong taker), 404 Not Found, 409 Conflict (wrong state)
-        return Response(409,
-            body: jsonEncode({
-              'error':
-                  'Failed to mark offer as conflict. Offer might be in the wrong state, not found, or taker ID mismatch.'
-            }));
-      }
-    } catch (e) {
-      print('Error in _markOfferConflictHandler: $e');
-      return Response.internalServerError(
-          body: jsonEncode(
-              {'error': 'Failed to mark offer as conflict: ${e.toString()}'}));
-    }
-  }
+  // Handler _markOfferConflictHandler removed
 
   Future<Response> _getSuccessfulOffersStatsHandler(Request request) async {
     try {
@@ -572,6 +542,37 @@ class ApiService {
           body: jsonEncode({
         'error': 'Failed to retrieve successful offers stats: ${e.toString()}'
       }));
+    }
+  }
+
+  Future<Response> _blikChargedHandler(Request request, String offerId) async {
+    try {
+      final takerId = request.headers['x-user-pubkey'];
+      if (takerId == null || takerId.isEmpty) {
+        return Response.unauthorized(jsonEncode(
+            {'error': 'Missing user identification (x-user-pubkey header)'}));
+      }
+
+      final result =
+          await _coordinatorService.blikChargedByTaker(offerId, takerId);
+
+      if (result['success'] == true) {
+        return Response.ok(
+            jsonEncode({
+              'message': result['message'],
+              'new_status': result['new_status']
+            }),
+            headers: {'Content-Type': 'application/json'});
+      } else {
+        return Response(409,
+            body: jsonEncode({'error': result['error']}),
+            headers: {'Content-Type': 'application/json'});
+      }
+    } catch (e) {
+      print('Error in _blikChargedHandler: $e');
+      return Response.internalServerError(
+          body: jsonEncode(
+              {'error': 'Failed to process BLIK charged: ${e.toString()}'}));
     }
   }
 }

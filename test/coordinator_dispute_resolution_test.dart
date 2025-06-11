@@ -400,75 +400,10 @@ void main() {
       });
     });
 
-    test(
-        'markOfferConflict starts timer, expires, offer becomes dispute, hold invoice settled',
-        () {
-      fakeAsync((async) {
-        final Duration serviceInternalDisputeTimeout = Duration(
-            seconds: int.tryParse(const String.fromEnvironment(
-                    'DISPUTE_TIMEOUT_SECONDS',
-                    defaultValue: '86400')) ??
-                86400);
-        final Duration shortTimerDurationForTest = Duration(seconds: 2);
-        final DateTime fixedTimeBeforeAction = clock.now().toUtc();
-        final DateTime offerCreatedAt = fixedTimeBeforeAction
-            .subtract(serviceInternalDisputeTimeout)
-            .add(shortTimerDurationForTest);
-
-        Offer currentOffer = createTestOffer(
-          id: disputeOfferId,
-          makerPubkey: disputeMakerId,
-          takerPubkey: disputeTakerId,
-          status: OfferStatus.invalidBlik,
-          createdAt: offerCreatedAt,
-          holdInvoicePreimage: disputePreimage,
-          holdInvoicePaymentHash: disputePaymentHash,
-        );
-
-        when(mockDbService.getOfferById(disputeOfferId))
-            .thenAnswer((_) async => currentOffer);
-        when(mockDbService.updateOfferStatus(
-                disputeOfferId, OfferStatus.conflict))
-            .thenAnswer((_) async {
-          currentOffer = currentOffer.copyWith(status: OfferStatus.conflict);
-          when(mockDbService.getOfferById(disputeOfferId))
-              .thenAnswer((_) async => currentOffer);
-          return true;
-        });
-        when(mockDbService.updateOfferStatus(
-                disputeOfferId, OfferStatus.dispute))
-            .thenAnswer((_) async {
-          currentOffer = currentOffer.copyWith(status: OfferStatus.dispute);
-          return true;
-        });
-        when(mockPaymentService.settleInvoice(preimageHex: disputePreimage))
-            .thenAnswer((_) async {});
-
-        coordinatorService.markOfferConflict(disputeOfferId, disputeTakerId);
-        async.flushMicrotasks();
-        expect(currentOffer.status, OfferStatus.conflict);
-
-        if (shortTimerDurationForTest > Duration(milliseconds: 100)) {
-          async.elapse(shortTimerDurationForTest - Duration(milliseconds: 100));
-          verifyNever(
-              mockPaymentService.settleInvoice(preimageHex: disputePreimage));
-          expect(currentOffer.status, OfferStatus.conflict);
-        }
-        async.elapse(
-          (shortTimerDurationForTest <= Duration(milliseconds: 100))
-              ? Duration(
-                  milliseconds: shortTimerDurationForTest.inMilliseconds + 100)
-              : Duration(milliseconds: 200),
-        );
-
-        verify(mockPaymentService.settleInvoice(preimageHex: disputePreimage))
-            .called(1);
-        verify(mockDbService.updateOfferStatus(
-                disputeOfferId, OfferStatus.dispute))
-            .called(1);
-        expect(currentOffer.status, OfferStatus.dispute);
-      });
-    });
+    // Test 'markOfferConflict starts timer, expires, offer becomes dispute, hold invoice settled' removed
+    // as markOfferConflict service method is removed. The transition to conflict now happens
+    // via blikChargedByTaker if offer is in invalidBlik state, and that flow
+    // already starts the dispute timer.
 
     test(
         'Dispute timer cancelled if maker confirms payment from conflict state',
