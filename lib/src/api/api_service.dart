@@ -300,27 +300,49 @@ class ApiService {
       final activeOffers =
           await _coordinatorService.getMyActiveOffers(userPubkey);
       if (activeOffers.isNotEmpty) {
-        // Find the first offer that is either:
-        // - not takerPaymentFailed
-        // - or takerPaymentFailed and userPubkey matches taker_pubkey
         Offer? selectedOffer;
         final now = DateTime.now().toUtc();
+
         for (final offer in activeOffers) {
-          if (offer.status.name == 'takerPaymentFailed') {
-            if (offer.takerPubkey == userPubkey) {
-              selectedOffer = offer;
-              break;
-            }
-          } else if (offer.status.name == 'takerPaid' &&
-              now.difference(offer.takerPaidAt!.toUtc()).inSeconds < 60) {
-            // skip takerPaid offers from active
-            selectedOffer = offer;
-            break;
-          } else {
+          final status = offer.status; // Use enum for comparison
+
+          // Priority 1: User's own payment failure
+          if (status == OfferStatus.takerPaymentFailed &&
+              offer.takerPubkey == userPubkey) {
             selectedOffer = offer;
             break;
           }
+
+          // Priority 2: Recently paid (e.g., for success message)
+          if (status == OfferStatus.takerPaid &&
+              offer.takerPaidAt != null && // Add null check
+              now.difference(offer.takerPaidAt!.toUtc()).inSeconds < 60) {
+            selectedOffer = offer;
+            break;
+          }
+
+          // Skip offers in terminal states that don't require immediate "active" view
+          // Older takerPaid, settled, cancelled, or general expired offers.
+          if (status ==
+                  OfferStatus
+                      .takerPaid || // Older than 60s or takerPaidAt is null
+              status == OfferStatus.settled ||
+              status == OfferStatus.cancelled ||
+              status == OfferStatus.expired) {
+            // General 'expired', not specific BLIK ones
+            continue; // Look for a more "active" offer
+          }
+
+          // If we reach here, the offer is in a state considered "active" for this endpoint.
+          // This includes created, funded, reserved, blikReceived, blikSentToMaker,
+          // expiredBlik, invalidBlik, expiredSentBlik, takerConfirmed,
+          // conflict, dispute, makerConfirmed, payingTaker.
+          // The requested statuses (expiredSentBlik, takerConfirmed, expiredBlik)
+          // will be selected if they are encountered here and no higher priority offer was found.
+          selectedOffer = offer;
+          break;
         }
+
         if (selectedOffer != null) {
           final offer = selectedOffer;
           // Manually construct the JSON map
