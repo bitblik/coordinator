@@ -311,10 +311,10 @@ class ApiService {
               selectedOffer = offer;
               break;
             }
-          } else if (offer.status.name == 'takerPaid' && now.difference(offer.takerPaidAt!.toUtc()).inSeconds < 60 ) {
+          } else if (offer.status.name == 'takerPaid' &&
+              now.difference(offer.takerPaidAt!.toUtc()).inSeconds < 60) {
             // skip takerPaid offers from active
-            selectedOffer = offer;
-            break;
+            continue;
           } else {
             selectedOffer = offer;
             break;
